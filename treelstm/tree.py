@@ -2,6 +2,9 @@
 class Tree(object):
     def __init__(self):
         self.parent = None
+        self.state = None
+        self.idx = -1
+        self.visited = False
         self.num_children = 0
         self.children = list()
 
@@ -9,6 +12,13 @@ class Tree(object):
         child.parent = self
         self.num_children += 1
         self.children.append(child)
+
+    @staticmethod
+    def get_root(node):
+        if node.parent is None:
+            return node
+        else:
+            return Tree.get_root(node.parent)
 
     def size(self):
         if getattr(self, '_size'):
@@ -20,8 +30,8 @@ class Tree(object):
         return self._size
 
     def depth(self):
-        if getattr(self, '_depth'):
-            return self._depth
+        #if getattr(self, '_depth'):
+        #    return self._depth
         count = 0
         if self.num_children > 0:
             for i in range(self.num_children):

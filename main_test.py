@@ -25,7 +25,6 @@ from treelstm import utils
 from treelstm import Trainer
 # CONFIG PARSER
 from config import parse_args
-from main_test import get_avg_grad
 
 
 def set_optimizer(model, lr, wd):
@@ -39,6 +38,17 @@ def set_optimizer(model, lr, wd):
         optimizer = optim.SGD(filter(lambda p: p.requires_grad,
                                      model.parameters()), lr=lr, weight_decay=wd)
     return optimizer
+
+
+def get_avg_grad(named_parameters):
+    layers, avg_data, avg_grads = [], [], []
+    for name, param in named_parameters:
+        if (param.requires_grad) and ("bias" not in name):
+            layers.append(name)
+            avg_data.append(param.data.abs().mean())
+            if param.grad is not None:
+                avg_grads.append(param.grad.abs().mean())
+    return layers, avg_data, avg_grads
 
 # MAIN BLOCK
 def main():
@@ -124,7 +134,7 @@ def main():
         args.num_classes,
         args.sparse,
         args.freeze_embed)
-    criterion = nn.KLDivLoss(reduction='none')
+    criterion = nn.KLDivLoss(reduce=False)
 
     # for words common to dataset vocab and GLOVE, use GLOVE vectors
     # for other words in dataset vocab, use random normal vectors
@@ -156,44 +166,62 @@ def main():
     # create trainer object for training and testing
     trainer = Trainer(args, model, criterion, optimizer, device)
 
+    init_layers, init_avg_data, init_avg_grad = get_avg_grad(model.named_parameters())
     best, last_dev_loss = -float('inf'), float('inf')
-    curr_lr = args.lr
+    dataset = train_dataset
+
     for epoch in range(args.epochs):
-        train_loss = trainer.train(train_dataset)
-        train_loss, train_pred = trainer.test(train_dataset)
-        dev_loss, dev_pred = trainer.test(dev_dataset)
-        test_loss, test_pred = trainer.test(test_dataset)
+        model.train()
+        optimizer.zero_grad()
+        total_loss = 0.0
+        outputs_nobatch, losses_nobatch = [], []
+        lstates_nobatch, rstates_nobatch = [], []
+        for idx in range(args.batchsize):
+            ltree, linput, rtree, rinput, label = dataset[idx]
+            lroot, ltree = ltree[0], ltree[1]
+            rroot, rtree = rtree[0], rtree[1]
+            target = utils.map_label_to_target(label, dataset.num_classes)
+            linput, rinput = linput.to(device), rinput.to(device)
+            target = target.to(device)
+            linputs = model.emb(linput)
+            rinputs = model.emb(rinput)
+            lstate, lhidden = model.childsumtreelstm(lroot, linputs)
+            rstate, rhidden = model.childsumtreelstm(rroot, rinputs)
+            output = model.similarity(lstate, rstate)
+            #output = model(lroot, linput, rroot, rinput)
+            outputs_nobatch.append(output)
+            lstates_nobatch.append(lstate)
+            rstates_nobatch.append(rstate)
+            loss = criterion(output, target)
+            losses_nobatch.append(loss)
+            total_loss += loss.sum()
+            loss.sum().backward()
+        print(total_loss / args.batchsize)
+        layers1, avg_data1, avg_grad1 = get_avg_grad(model.named_parameters())
 
-        train_pearson = metrics.pearson(train_pred, train_dataset.labels)
-        train_mse = metrics.mse(train_pred, train_dataset.labels)
-        logger.info('==> Epoch {}, Train \tLoss: {}\tPearson: {}\tMSE: {}'.format(
-            epoch, train_loss, train_pearson, train_mse))
-        dev_pearson = metrics.pearson(dev_pred, dev_dataset.labels)
-        dev_mse = metrics.mse(dev_pred, dev_dataset.labels)
-        logger.info('==> Epoch {}, Dev \tLoss: {}\tPearson: {}\tMSE: {}'.format(
-            epoch, dev_loss, dev_pearson, dev_mse))
-        test_pearson = metrics.pearson(test_pred, test_dataset.labels)
-        test_mse = metrics.mse(test_pred, test_dataset.labels)
-        logger.info('==> Epoch {}, Test \tLoss: {}\tPearson: {}\tMSE: {}'.format(
-            epoch, test_loss, test_pearson, test_mse))
-
-        if dev_loss > last_dev_loss:
-            curr_lr = curr_lr / 5
-            trainer.optimizer = set_optimizer(model, curr_lr, args.wd)
-            print('reset lr to {}'.format(curr_lr))
-
-        last_dev_loss = dev_loss
-
-        if best < test_pearson:
-            best = test_pearson
-            checkpoint = {
-                'model': trainer.model.state_dict(),
-                'optim': trainer.optimizer,
-                'pearson': test_pearson, 'mse': test_mse,
-                'args': args, 'epoch': epoch
-            }
-            logger.debug('==> New optimum found, checkpointing everything now...')
-            torch.save(checkpoint, '%s.pt' % os.path.join(args.save, args.expname))
+        model.train()
+        optimizer.zero_grad()
+        total_loss = 0.0
+        ltrees, linputs, rtrees, rinputs, labels = dataset.get_next_batch(0, args.batchsize)
+        targets = []
+        for i in range(len(linputs)):
+            linputs[i] = linputs[i].to(device)
+            rinputs[i] = rinputs[i].to(device)
+            target = utils.map_label_to_target(labels[i], dataset.num_classes)
+            targets.append(target.to(device))
+        targets = torch.cat(targets, dim=0)
+        linputs_tensor, rinputs_tensor = [], []
+        for i in range(len(linputs)):
+            linputs_tensor.append(model.emb(linputs[i]))
+            rinputs_tensor.append(model.emb(rinputs[i]))
+        lstates, lhidden = model.childsumtreelstm(ltrees, linputs_tensor)
+        rstates, rhidden = model.childsumtreelstm(rtrees, rinputs_tensor)
+        outputs = model.similarity(lstates, rstates)
+        losses = criterion(outputs, targets)
+        total_loss += losses.sum()
+        losses.sum().backward()
+        layers2, avg_data2, avg_grad2 = get_avg_grad(model.named_parameters())
+        import pdb; pdb.set_trace()
 
 
 if __name__ == "__main__":

@@ -37,6 +37,18 @@ class SICKDataset(data.Dataset):
         label = deepcopy(self.labels[index])
         return (ltree, lsent, rtree, rsent, label)
 
+    def get_next_batch(self, index, batch_size):
+        ltrees, rtrees, lsents, rsents, labels = [], [], [], [], []
+        for i in range(index, index+batch_size):
+            if i < self.size:
+                ltree, lsent, rtree, rsent, label = self.__getitem__(i)
+                ltrees.append(ltree[1])
+                rtrees.append(rtree[1])
+                lsents.append(lsent)
+                rsents.append(rsent)
+                labels.append(label)
+        return (ltrees, lsents, rtrees, rsents, labels)
+
     def read_sentences(self, filename):
         with open(filename, 'r') as f:
             sentences = [self.read_sentence(line) for line in tqdm(f.readlines())]
@@ -77,7 +89,7 @@ class SICKDataset(data.Dataset):
                     else:
                         prev = tree
                         idx = parent
-        return root
+        return (root, trees)
 
     def read_labels(self, filename):
         with open(filename, 'r') as f:
